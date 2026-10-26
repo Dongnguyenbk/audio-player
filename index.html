@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Audio Library</title>
+  <style>
+    :root { color-scheme: dark; font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; background: #10131a; color: #eef2ff; }
+    .app { width: min(100% - 32px, 980px); margin: 0 auto; padding: 36px 0 120px; }
+    header { margin-bottom: 24px; }
+    h1 { margin: 0 0 8px; font-size: clamp(1.8rem, 5vw, 2.6rem); letter-spacing: -.04em; }
+    .muted { color: #9ba6bd; }
+    .toolbar { display: flex; gap: 12px; flex-wrap: wrap; margin: 20px 0; }
+    input[type="search"] { flex: 1 1 240px; min-width: 0; }
+    input, button { font: inherit; }
+    input[type="search"] { padding: 12px 14px; border: 1px solid #30394b; border-radius: 12px; background: #191f2b; color: inherit; outline: none; }
+    input:focus { border-color: #91a8ff; }
+    button { border: 1px solid #39445a; border-radius: 10px; padding: 10px 14px; background: #222b3b; color: inherit; cursor: pointer; }
+    button:hover { background: #303c52; }
+    button:disabled { opacity: .4; cursor: not-allowed; }
+    .folder { margin: 24px 0; }
+    .folder h2 { font-size: 1rem; font-weight: 650; color: #aebcf5; margin: 0 0 10px; }
+    .track { display: flex; align-items: center; gap: 12px; padding: 13px 14px; margin: 7px 0; background: #191f2b; border: 1px solid #293246; border-radius: 13px; }
+    .track.active { border-color: #91a8ff; background: #202941; }
+    .play { flex: 0 0 auto; width: 42px; height: 42px; border-radius: 50%; padding: 0; font-size: 1rem; }
+    .track-info { flex: 1; min-width: 0; }
+    .track-title { overflow-wrap: anywhere; font-weight: 600; }
+    .track-path { margin-top: 4px; font-size: .8rem; color: #9ba6bd; overflow-wrap: anywhere; }
+    .track button.add { padding: 8px 10px; font-size: .85rem; }
+    .empty { padding: 28px; text-align: center; border: 1px dashed #39445a; border-radius: 14px; color: #9ba6bd; }
+    .player { position: fixed; inset: auto 0 0; background: #171d28ee; backdrop-filter: blur(16px); border-top: 1px solid #30394b; padding: 14px max(16px, calc((100vw - 980px)/2)); }
+    .player-inner { display: grid; grid-template-columns: minmax(130px, 1fr) minmax(220px, 2fr); gap: 18px; align-items: center; }
+    .now-title { font-weight: 650; overflow-wrap: anywhere; }
+    .controls { min-width: 0; }
+    audio { width: 100%; height: 38px; }
+    .player-buttons { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+    .player-buttons button { padding: 6px 10px; }
+    .status { font-size: .82rem; color: #9ba6bd; }
+    @media (max-width: 600px) { .app { padding-top: 24px; } .player-inner { grid-template-columns: 1fr; gap: 8px; } .player { padding-top: 10px; padding-bottom: 10px; } .track { gap: 9px; } .track button.add { display: none; } }
+  </style>
+</head>
+<body>
+  <main class="app">
+    <header>
+      <h1>Audio Library</h1>
+      <div class="muted">Browse and play audio files organized in folders.</div>
+    </header>
+
+    <div class="toolbar">
+      <input id="search" type="search" placeholder="Search tracks or folders…" aria-label="Search tracks or folders">
+      <button id="chooseFolder" type="button">Choose audio folder</button>
+      <button id="loadDemo" type="button">Load example list</button>
+    </div>
+    <p class="muted" id="help">Choose a folder to scan it locally, or edit the audio list in this file for static hosting.</p>
+    <div id="library" aria-live="polite"></div>
+  </main>
+
+  <section class="player" aria-label="Audio player">
+    <div class="player-inner">
+      <div>
+        <div class="now-title" id="nowTitle">Nothing playing</div>
+        <div class="status" id="nowPath">Select a track to start</div>
+        <div class="player-buttons">
+          <button id="prev" type="button" aria-label="Previous track">⏮</button>
+          <button id="next" type="button" aria-label="Next track">⏭</button>
+          <label class="status"><input id="autoplayNext" type="checkbox" checked> Auto-next</label>
+        </div>
+      </div>
+      <div class="controls">
+        <audio id="audio" controls preload="metadata"></audio>
+      </div>
+    </div>
+  </section>
+
+  <script>
+    /*
+      STATIC-HOSTING SETUP:
+      1. Put index.html beside your audio folders.
+      2. Edit AUDIO_FILES below with paths relative to this index.html.
+      3. Upload the whole folder structure to your static host.
+
+      Example:
+      const AUDIO_FILES = [
+        "Japanese/Minna no Nihongo/01.mp3",
+        "Japanese/Minna no Nihongo/02.mp3",
+        "Podcasts/episode-01.m4a"
+      ];
+
+      A plain static web page cannot automatically list every file on a server.
+      The folder picker works locally in supported browsers; it does not upload files.
+    */
+    const AUDIO_FILES = [
+      // Add paths here, for example: "Japanese/Chapter 01/track 01.mp3",
+    ];
+
+    const audio = document.getElementById('audio');
+    const library = document.getElementById('library');
+    const search = document.getElementById('search');
+    const nowTitle = document.getElementById('nowTitle');
+    const nowPath = document.getElementById('nowPath');
+    const autoplayNext = document.getElementById('autoplayNext');
+    let tracks = [];
+    let currentIndex = -1;
+    let objectUrls = [];
+
+    const escapeHtml = value => String(value).replace(/[&<>"']/g, ch => ({
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    })[ch]);
+
+    function niceName(path) {
+      const name = path.split('/').pop().split('\\').pop();
+      return name.replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ');
+    }
+
+    function setTracks(items) {
+      tracks = items.map(item => ({
+        title: item.title || niceName(item.path),
+        path: item.path,
+        src: item.src || encodeURI(item.path).replace(/#/g, '%23').replace(/\?/g, '%3F'),
+        folder: item.folder || (item.path.includes('/') ? item.path.slice(0, item.path.lastIndexOf('/')) : 'Audio')
+      })).sort((a, b) => a.path.localeCompare(b.path, undefined, { numeric: true, sensitivity: 'base' }));
+      currentIndex = -1;
+      render();
+    }
+
+    function render() {
+      const term = search.value.trim().toLowerCase();
+      const filtered = tracks.map((track, index) => ({ ...track, index }))
+        .filter(track => `${track.title} ${track.path} ${track.folder}`.toLowerCase().includes(term));
+      if (!filtered.length) {
+        library.innerHTML = `<div class="empty">${tracks.length ? 'No tracks match your search.' : 'No audio files listed yet. Add paths to <code>AUDIO_FILES</code> in index.html, or choose a folder.'}</div>`;
+        return;
+      }
+      const groups = new Map();
+      filtered.forEach(track => {
+        if (!groups.has(track.folder)) groups.set(track.folder, []);
+        groups.get(track.folder).push(track);
+      });
+      library.innerHTML = [...groups.entries()].map(([folder, items]) => `
+        <section class="folder">
+          <h2>${escapeHtml(folder)} <span class="muted">(${items.length})</span></h2>
+          ${items.map(track => `
+            <div class="track ${track.index === currentIndex ? 'active' : ''}">
+              <button class="play" type="button" data-play="${track.index}" aria-label="Play ${escapeHtml(track.title)}">${track.index === currentIndex && !audio.paused ? 'Ⅱ' : '▶'}</button>
+              <div class="track-info">
+                <div class="track-title">${escapeHtml(track.title)}</div>
+                <div class="track-path">${escapeHtml(track.path)}</div>
+              </div>
+              <button class="add" type="button" data-play="${track.index}">Play</button>
+            </div>`).join('')}
+        </section>`).join('');
+    }
+
+    function playTrack(index) {
+      if (index < 0 || index >= tracks.length) return;
+      currentIndex = index;
+      const track = tracks[index];
+      if (audio.src !== new URL(track.src, document.baseURI).href) audio.src = track.src;
+      nowTitle.textContent = track.title;
+      nowPath.textContent = track.path;
+      render();
+      audio.play().catch(() => {
+        nowPath.textContent = 'Playback was blocked or this file could not be loaded. Press Play to retry.';
+      });
+    }
+
+    library.addEventListener('click', event => {
+      const button = event.target.closest('[data-play]');
+      if (button) playTrack(Number(button.dataset.play));
+    });
+    search.addEventListener('input', render);
+    document.getElementById('prev').addEventListener('click', () => {
+      if (tracks.length) playTrack((currentIndex <= 0 ? tracks.length : currentIndex) - 1);
+    });
+    document.getElementById('next').addEventListener('click', () => {
+      if (tracks.length) playTrack((currentIndex + 1) % tracks.length);
+    });
+    audio.addEventListener('play', render);
+    audio.addEventListener('pause', render);
+    audio.addEventListener('ended', () => {
+      if (autoplayNext.checked && currentIndex >= 0 && currentIndex < tracks.length - 1) playTrack(currentIndex + 1);
+    });
+
+    document.getElementById('loadDemo').addEventListener('click', () => {
+      setTracks([
+        { path: 'Japanese/Minna no Nihongo/01.mp3' },
+        { path: 'Japanese/Minna no Nihongo/02.mp3' },
+        { path: 'Podcasts/Episode 01.mp3' }
+      ]);
+      document.getElementById('help').textContent = 'Example paths only. Replace them with your actual filenames in AUDIO_FILES.';
+    });
+
+    document.getElementById('chooseFolder').addEventListener('click', async () => {
+      if (!window.showDirectoryPicker) {
+        alert('Folder selection is not supported in this browser. Use AUDIO_FILES or try a recent Chromium browser on localhost/HTTPS.');
+        return;
+      }
+      try {
+        const root = await window.showDirectoryPicker();
+        objectUrls.forEach(URL.revokeObjectURL);
+        objectUrls = [];
+        const found = [];
+        async function walk(dir, prefix = '') {
+          for await (const entry of dir.values()) {
+            const path = prefix ? `${prefix}/${entry.name}` : entry.name;
+            if (entry.kind === 'directory') await walk(entry, path);
+            else if (/\.(mp3|m4a|aac|ogg|oga|opus|wav|flac|webm)$/i.test(entry.name)) {
+              const file = await entry.getFile();
+              const src = URL.createObjectURL(file);
+              objectUrls.push(src);
+              found.push({ path, src, title: niceName(path), folder: path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : 'Audio' });
+            }
+          }
+        }
+        await walk(root);
+        setTracks(found);
+        document.getElementById('help').textContent = `Loaded ${found.length} audio file(s) from the selected folder. This selection stays in this browser session.`;
+      } catch (error) {
+        if (error.name !== 'AbortError') alert('Could not read that folder: ' + error.message);
+      }
+    });
+
+    setTracks(AUDIO_FILES.map(path => ({ path })));
+  </script>
+</body>
+</html>
